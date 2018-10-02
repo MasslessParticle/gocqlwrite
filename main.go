@@ -25,15 +25,33 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	for i := 0; i < 1; i++ {
+
+	var sessions []*gocql.Session
+	sessionsChan := make(chan *gocql.Session, 500)
+
+	wg := sync.WaitGroup{}
+	wg.Add(500)
+	for i := 0; i < 500; i++ {
 		go func() {
 			session := connect()
-			defer session.Close()
+			sessionsChan <- session
+			wg.Done()
+		}()
+	}
+	wg.Wait()
 
+	for i := 0; i < 500; i++ {
+		session := <-sessionsChan
+		sessions = append(sessions, session)
+		defer session.Close()
+	}
+
+	for i := 0; i < 20000; i++ {
+		go func() {
 			guid := guid()
 			t := time.NewTicker(delay)
 			for range t.C {
-				err := insert(guid, session)
+				err := insert(guid, sessions[i%len(sessions)])
 				if err != nil {
 					atomic.AddUint64(&failed, 1)
 					log.Println(err)
@@ -76,9 +94,9 @@ func connect() *gocql.Session {
 	if err := session.Query(`
 		CREATE TABLE IF NOT EXISTS logs (
 		   source_id varchar,
-		   ts timeuuid,
+		   ts timestamp,
 		   log varchar,
-		PRIMARY KEY (source_id, ts);`).Exec(); err != nil {
+		PRIMARY KEY (source_id, ts));`).Exec(); err != nil {
 		log.Fatal(err)
 	}
 	return session
