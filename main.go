@@ -23,40 +23,6 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-<<<<<<< HEAD
-
-	var sessions []*gocql.Session
-	sessionsChan := make(chan *gocql.Session, 500)
-
-	wg := sync.WaitGroup{}
-	wg.Add(500)
-	for i := 0; i < 500; i++ {
-		go func() {
-			session := connect()
-			sessionsChan <- session
-			wg.Done()
-		}()
-	}
-	wg.Wait()
-
-	for i := 0; i < 500; i++ {
-		session := <-sessionsChan
-		sessions = append(sessions, session)
-		defer session.Close()
-	}
-
-	for i := 0; i < 20000; i++ {
-		go func() {
-			guid := guid()
-			t := time.NewTicker(delay)
-			for range t.C {
-				err := insert(guid, sessions[i%len(sessions)])
-				if err != nil {
-					atomic.AddUint64(&failed, 1)
-					log.Println(err)
-					continue
-				}
-=======
 
 	fmt.Println("Create Table")
 	c := setupConnction()
@@ -85,7 +51,6 @@ func main() {
 							log.Println(err)
 							continue
 						}
->>>>>>> test works
 
 						atomic.AddUint64(&success, 1)
 					}
