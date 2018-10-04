@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/signal"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -25,6 +23,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+<<<<<<< HEAD
 
 	var sessions []*gocql.Session
 	sessionsChan := make(chan *gocql.Session, 500)
@@ -57,40 +56,81 @@ func main() {
 					log.Println(err)
 					continue
 				}
+=======
 
-				atomic.AddUint64(&success, 1)
+	fmt.Println("Create Table")
+	c := setupConnction()
+
+	fmt.Println("Create Sessions")
+	ps := 125
+	sessions := make(chan *gocql.Session, 500)
+	createSessions(c, sessions, ps)
+
+	fmt.Println("Write")
+	doneChan := make(chan struct{}, 1)
+	for i := 0; i < ps; i++ {
+		guid := guid()
+		fmt.Println(guid)
+
+		go func() {
+			session := <-sessions
+			t := time.NewTicker(delay)
+			for {
+				select {
+				case <-t.C:
+					for i := 0; i < 20000/ps; i++ {
+						err := insert(guid, session)
+						if err != nil {
+							atomic.AddUint64(&failed, 1)
+							log.Println(err)
+							continue
+						}
+>>>>>>> test works
+
+						atomic.AddUint64(&success, 1)
+					}
+				case <-doneChan:
+					return
+				}
 			}
 		}()
 	}
 
-	wait()
+	testDuration := time.NewTimer(time.Minute)
+	<-testDuration.C
+	close(doneChan)
 }
 
-func wait() {
-	var end_waiter sync.WaitGroup
-	end_waiter.Add(1)
-	var signal_channel chan os.Signal
-	signal_channel = make(chan os.Signal, 1)
-	signal.Notify(signal_channel, os.Interrupt)
-	go func() {
-		<-signal_channel
-		end_waiter.Done()
-	}()
-	end_waiter.Wait()
+func createSessions(c *gocql.ClusterConfig, sessions chan *gocql.Session, poolSize int) {
+	for i := 0; i < poolSize; i++ {
+
+		session, err := c.CreateSession()
+		if err != nil {
+			panic(err)
+		}
+		fmt.Print(i)
+		sessions <- session
+
+	}
+	fmt.Println()
 }
 
-func connect() *gocql.Session {
-	cluster := gocql.NewCluster()
+func setupConnction() *gocql.ClusterConfig {
+	cluster := gocql.NewCluster() //TODO: What about the hostname of a load balancer?
+
 	cluster.Authenticator = gocql.PasswordAuthenticator{Username: os.Getenv("USER"), Password: os.Getenv("PASSWORD")}
 	cluster.Keyspace = "gocqlwrite"
 	cluster.Consistency = gocql.Quorum
+	cluster.ConnectTimeout = time.Second * 10
+
+	//TODO: Know more about how this works
+	cluster.DisableInitialHostLookup = true
 
 	session, err := cluster.CreateSession()
 	if err != nil {
 		panic(err)
 	}
 
-	fmt.Println("Create Table")
 	if err := session.Query(`
 		CREATE TABLE IF NOT EXISTS logs (
 		   source_id varchar,
@@ -99,7 +139,9 @@ func connect() *gocql.Session {
 		PRIMARY KEY (source_id, ts));`).Exec(); err != nil {
 		log.Fatal(err)
 	}
-	return session
+	session.Close()
+
+	return cluster
 }
 
 func insert(guid string, s *gocql.Session) error {
