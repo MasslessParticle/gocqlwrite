@@ -44,16 +44,19 @@ func main() {
 			for {
 				select {
 				case <-t.C:
+					batch := session.NewBatch(gocql.LoggedBatch)
 					for i := 0; i < 20000/ps; i++ {
-						err := insert(guid, session)
-						if err != nil {
-							atomic.AddUint64(&failed, 1)
-							log.Println(err)
-							continue
-						}
-
-						atomic.AddUint64(&success, 1)
+						now := time.Now()
+						batch.Query(`INSERT into logs (source_id, ts, log) VALUES(?, ?, ?)`, guid, now, "sample log message "+guid)
 					}
+
+					err = session.ExecuteBatch(batch)
+					if err != nil {
+						atomic.AddUint64(&failed, 20000/uint64(ps))
+						log.Println(err)
+					}
+
+					atomic.AddUint64(&success, 20000/uint64(ps))
 				case <-doneChan:
 					return
 				}
@@ -87,9 +90,6 @@ func setupConnction() *gocql.ClusterConfig {
 	cluster.Keyspace = "gocqlwrite"
 	cluster.Consistency = gocql.Quorum
 	cluster.ConnectTimeout = time.Second * 10
-
-	//TODO: Know more about how this works
-	cluster.DisableInitialHostLookup = true
 
 	session, err := cluster.CreateSession()
 	if err != nil {
