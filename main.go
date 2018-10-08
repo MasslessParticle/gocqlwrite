@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/rand"
 	"fmt"
 	"log"
 	"os"
@@ -44,10 +45,12 @@ func main() {
 			for {
 				select {
 				case <-t.C:
+					logMessage := sampleLogMessage()
+
 					batch := session.NewBatch(gocql.LoggedBatch)
 					for i := 0; i < 20000/ps; i++ {
 						now := time.Now()
-						batch.Query(`INSERT into logs (source_id, ts, log) VALUES(?, ?, ?)`, guid, now, "sample log message "+guid)
+						batch.Query(`INSERT into logs (source_id, ts, log) VALUES(?, ?, ?)`, guid, now, logMessage)
 					}
 
 					err = session.ExecuteBatch(batch)
@@ -67,6 +70,15 @@ func main() {
 	testDuration := time.NewTimer(time.Minute)
 	<-testDuration.C
 	close(doneChan)
+}
+
+func sampleLogMessage() string {
+	b := make([]byte, 200)
+	_, err := rand.Read(b)
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
 }
 
 func createSessions(c *gocql.ClusterConfig, sessions chan *gocql.Session, poolSize int) {
