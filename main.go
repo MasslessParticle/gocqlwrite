@@ -1,9 +1,10 @@
 package main
 
 import (
-	"crypto/rand"
 	"fmt"
 	"log"
+	"math/rand"
+	"net/http"
 	"os"
 	"sync/atomic"
 	"time"
@@ -13,6 +14,14 @@ import (
 )
 
 func main() {
+	http.HandleFunc("/run_test", func(w http.ResponseWriter, r *http.Request) {
+		go runTest()
+		w.Write([]byte("Test Started!"))
+	})
+	http.ListenAndServe(":"+os.Getenv("PORT"), nil)
+}
+
+func runTest() {
 	var success uint64
 	var failed uint64
 	defer func() {
@@ -49,8 +58,7 @@ func main() {
 
 					batch := session.NewBatch(gocql.LoggedBatch)
 					for i := 0; i < 20000/ps; i++ {
-						now := time.Now()
-						batch.Query(`INSERT into logs (source_id, ts, log) VALUES(?, ?, ?)`, guid, now, logMessage)
+						batch.Query(`INSERT into logs (source_id, ts_nanos, log) VALUES(?, ?, ?)`, guid, time.Now().UnixNano(), logMessage)
 					}
 
 					err = session.ExecuteBatch(batch)
@@ -72,11 +80,12 @@ func main() {
 	close(doneChan)
 }
 
+const letterBytes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
 func sampleLogMessage() string {
 	b := make([]byte, 200)
-	_, err := rand.Read(b)
-	if err != nil {
-		panic(err)
+	for i := range b {
+		b[i] = letterBytes[rand.Intn(len(letterBytes))]
 	}
 	return string(b)
 }
@@ -96,7 +105,7 @@ func createSessions(c *gocql.ClusterConfig, sessions chan *gocql.Session, poolSi
 }
 
 func setupConnction() *gocql.ClusterConfig {
-	cluster := gocql.NewCluster() //TODO: What about the hostname of a load balancer?
+	cluster := gocql.NewCluster()
 
 	cluster.Authenticator = gocql.PasswordAuthenticator{Username: os.Getenv("USER"), Password: os.Getenv("PASSWORD")}
 	cluster.Keyspace = "gocqlwrite"
@@ -108,27 +117,12 @@ func setupConnction() *gocql.ClusterConfig {
 		panic(err)
 	}
 
-	if err := session.Query(`
-		CREATE TABLE IF NOT EXISTS logs (
-		   source_id varchar,
-		   ts timestamp,
-		   log varchar,
-		PRIMARY KEY (source_id, ts));`).Exec(); err != nil {
+	if err := session.Query(`CREATE TABLE IF NOT EXISTS logs (source_id varchar, ts_nanos bigint, log varchar, PRIMARY KEY (source_id, ts_nanos));`).Exec(); err != nil {
 		log.Fatal(err)
 	}
 	session.Close()
 
 	return cluster
-}
-
-func insert(guid string, s *gocql.Session) error {
-	now := time.Now()
-	return s.Query(`
-				INSERT into logs (source_id, ts, log) VALUES(?, ?, ?)`,
-		guid,
-		now,
-		"sample log message "+guid,
-	).Exec()
 }
 
 func guid() string {
