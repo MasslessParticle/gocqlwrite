@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -45,7 +46,13 @@ func generate(guid string) {
 	for i := 0; i < seconds; i++ {
 		batch := session.NewBatch(gocql.LoggedBatch)
 		for j := 0; j < rate; j++ {
-			batch.Query(`INSERT into logs (source_id, ts_min, ts, log) VALUES(?, ?, ?, ?)`, guid, t.Format("200601021504"), t.UnixNano(), gofakeit.HipsterSentence(21))
+			batch.Query(`INSERT into logs (source_id, ts_min, ts, tags, log) VALUES(?, ?, ?, ?, ?)`,
+				guid,
+				t.Format("200601021504"),
+				t.UnixNano(),
+				fmt.Sprintf("beer=%s,car=%s,color=%s", gofakeit.BeerName(), gofakeit.CarMaker(), gofakeit.Color()),
+				[]byte(fmt.Sprintf("%s %s\n", gofakeit.HackerPhrase(), gofakeit.HackerPhrase())),
+			)
 			t = t.Add(millisPerLog)
 			atomic.StoreInt64(&now, t.UnixNano())
 		}
@@ -91,9 +98,11 @@ func serveStats(appId string) {
 }
 
 func setupConnction() *gocql.ClusterConfig {
+	hosts := strings.Split(os.Getenv("HOSTS"), ",")
+	cluster := gocql.NewCluster(hosts...)
 
 	cluster.Authenticator = gocql.PasswordAuthenticator{Username: os.Getenv("USER"), Password: os.Getenv("PASSWORD")}
-	cluster.Keyspace = "gocqlwrite"
+	cluster.Keyspace = "logstore"
 	cluster.Consistency = gocql.Quorum
 	cluster.ConnectTimeout = time.Second * 10
 	cluster.Timeout = 10 * time.Second
@@ -106,10 +115,22 @@ func setupConnction() *gocql.ClusterConfig {
 	if err := session.Query(`
 		CREATE TABLE IF NOT EXISTS logs (
 		   source_id varchar,
-		   ts_min varchar,
-		   ts bigint,
-		   log varchar,
+		   ts_min    varchar,
+		   ts        bigint,
+		   tags      text,
+		   log       blob,
 		PRIMARY KEY ((source_id, ts_min), ts));`).Exec(); err != nil {
+		log.Fatal(err)
+	}
+
+	if err := session.Query(`
+	  	CREATE CUSTOM INDEX IF NOT EXISTS on logs (tags) USING 'org.apache.cassandra.index.sasi.SASIIndex'
+	  	WITH OPTIONS = {
+		  'analyzer_class': 'org.apache.cassandra.index.sasi.analyzer.DelimiterAnalyzer',
+		  'delimiter': ',',
+		  'mode': 'prefix',
+		  'analyzed': 'true'
+		};`).Exec(); err != nil {
 		log.Fatal(err)
 	}
 	session.Close()
@@ -118,9 +139,11 @@ func setupConnction() *gocql.ClusterConfig {
 }
 
 func startSession() *gocql.Session {
+	hosts := strings.Split(os.Getenv("HOSTS"), ",")
+	cluster := gocql.NewCluster(hosts...)
 
 	cluster.Authenticator = gocql.PasswordAuthenticator{Username: os.Getenv("USER"), Password: os.Getenv("PASSWORD")}
-	cluster.Keyspace = "gocqlwrite"
+	cluster.Keyspace = "logstore"
 	cluster.Consistency = gocql.Quorum
 	cluster.ConnectTimeout = 30 * time.Second
 	cluster.Compressor = gocql.SnappyCompressor{}

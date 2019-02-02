@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -146,6 +147,9 @@ func stopSessions() {
 
 func startSessions() {
 	sessions = make(chan *gocql.Session, connectionPool)
+
+	hosts := strings.Split(os.Getenv("HOSTS"), ",")
+	cluster := gocql.NewCluster(hosts...)
 
 	cluster.Authenticator = gocql.PasswordAuthenticator{Username: os.Getenv("USER"), Password: os.Getenv("PASSWORD")}
 	cluster.Keyspace = "gocqlwrite"

@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -108,6 +109,8 @@ func serveStats(appId string) {
 }
 
 func setupConnction() *gocql.ClusterConfig {
+	hosts := strings.Split(os.Getenv("HOSTS"), ",")
+	cluster := gocql.NewCluster(hosts...)
 
 	cluster.Authenticator = gocql.PasswordAuthenticator{Username: os.Getenv("USER"), Password: os.Getenv("PASSWORD")}
 	cluster.Keyspace = "gocqlwrite"
