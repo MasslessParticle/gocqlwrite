@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -13,7 +14,7 @@ import (
 
 var (
 	connectionPool   = 35
-	minutesPerBucket = 15
+	minutesPerBucket = 20
 	sessions         chan *gocql.Session
 )
 
@@ -40,6 +41,17 @@ func handleQuery(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("Cannot parse end value"))
 		w.WriteHeader(http.StatusBadRequest)
 		return
+	}
+
+	q := r.URL.Query().Get("q")
+	var re *regexp.Regexp
+	if q != "" {
+		re, err = regexp.Compile(q)
+		if err != nil {
+			w.Write([]byte("Bad Regex"))
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 	}
 
 	times := getTimes(start, end)
@@ -79,7 +91,7 @@ func handleQuery(w http.ResponseWriter, r *http.Request) {
 		wg.Add(1)
 		s := <-sessions
 		go func(s *gocql.Session, t []time.Time) {
-			counts <- countLogs(s, sourceID, t)
+			counts <- countLogs(s, sourceID, t, re)
 			sessions <- s
 			wg.Done()
 		}(s, ts)
@@ -92,7 +104,7 @@ func handleQuery(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(fmt.Sprintf("Num Logs: %d\n", total)))
 }
 
-func countLogs(s *gocql.Session, sourceID string, ts []time.Time) int {
+func countLogs(s *gocql.Session, sourceID string, ts []time.Time, re *regexp.Regexp) int {
 	q := s.Query(
 		`SELECT log FROM logs WHERE source_id = ? and ts_min IN ?`,
 		sourceID,
@@ -102,9 +114,11 @@ func countLogs(s *gocql.Session, sourceID string, ts []time.Time) int {
 	fmt.Println(q)
 
 	var numLogs int
-	var log string
+	var log []byte
 	for q.Scan(&log) {
-		numLogs++
+		if re.Match(log) {
+			numLogs++
+		}
 	}
 
 	if err := q.Close(); err != nil {
@@ -119,7 +133,7 @@ func getTimes(start, end time.Time) []time.Time {
 	end = end.Truncate(time.Minute)
 
 	var times []time.Time
-	for t := start; t == end || end.After(t); t = t.Add(time.Minute) {
+	for t := start; t.Equal(end) || end.After(t); t = t.Add(time.Minute) {
 		times = append(times, t)
 	}
 
@@ -152,7 +166,7 @@ func startSessions() {
 	cluster := gocql.NewCluster(hosts...)
 
 	cluster.Authenticator = gocql.PasswordAuthenticator{Username: os.Getenv("USER"), Password: os.Getenv("PASSWORD")}
-	cluster.Keyspace = "gocqlwrite"
+	cluster.Keyspace = "logstore"
 	cluster.Consistency = gocql.Quorum
 	cluster.ConnectTimeout = 30 * time.Second
 	cluster.Compressor = gocql.SnappyCompressor{}
