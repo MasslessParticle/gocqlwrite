@@ -13,8 +13,8 @@ import (
 )
 
 var (
-	connectionPool   = 35
-	minutesPerBucket = 20
+	connectionPool   = 1
+	minutesPerBucket = 60
 	sessions         chan *gocql.Session
 )
 
@@ -28,6 +28,7 @@ func main() {
 }
 
 func handleQuery(w http.ResponseWriter, r *http.Request) {
+	//Query params setup
 	sourceID := r.URL.Query().Get("source_id")
 	start, err := time.Parse("200601021504", r.URL.Query().Get("start"))
 	if err != nil {
@@ -54,26 +55,16 @@ func handleQuery(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	//Do Query Query params setup
+
 	times := getTimes(start, end)
-	var tp [][]time.Time
-	var lastIndex int
-	for i := range times {
-		if i%minutesPerBucket == 0 && i != lastIndex {
-			tp = append(tp, times[lastIndex:i])
-			lastIndex = i
-		}
-	}
-	if lastIndex != len(times) {
-		tp = append(tp, times[lastIndex:])
-	}
+	counts := make(chan int, len(times))
 
-	counts := make(chan int, len(tp))
-
-	var wg2 sync.WaitGroup
-	wg2.Add(1)
+	var wg sync.WaitGroup
+	wg.Add(1)
 	var total int
 	go func() {
-		defer wg2.Done()
+		defer wg.Done()
 		for {
 			select {
 			case c, ok := <-counts:
@@ -86,42 +77,59 @@ func handleQuery(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	var wg sync.WaitGroup
-	for _, ts := range tp {
-		wg.Add(1)
-		s := <-sessions
-		go func(s *gocql.Session, t []time.Time) {
-			counts <- countLogs(s, sourceID, t, re)
-			sessions <- s
-			wg.Done()
-		}(s, ts)
-	}
+	s := <-sessions
+	batchQuery(sourceID, re, times, s, counts)
+	sessions <- s
 
 	wg.Wait()
-	close(counts)
-	wg2.Wait()
 
 	w.Write([]byte(fmt.Sprintf("Num Logs: %d\n", total)))
 }
 
-func countLogs(s *gocql.Session, sourceID string, ts []time.Time, re *regexp.Regexp) int {
-	q := s.Query(
+func batchQuery(sourceID string, re *regexp.Regexp, times []time.Time, s *gocql.Session, counts chan int) {
+	var tp [][]time.Time
+	var lastIndex int
+	for i := range times {
+		if i%minutesPerBucket == 0 && i != lastIndex {
+			tp = append(tp, times[lastIndex:i])
+			lastIndex = i
+		}
+	}
+	if lastIndex != len(times) {
+		tp = append(tp, times[lastIndex:])
+	}
+
+	var wg sync.WaitGroup
+	for _, t := range tp {
+		wg.Add(1)
+		go func(s *gocql.Session, t []time.Time) {
+			counts <- batchCount(s, sourceID, t, re)
+			wg.Done()
+		}(s, t)
+	}
+	wg.Wait()
+	close(counts)
+}
+
+func batchCount(s *gocql.Session, sourceID string, t []time.Time, re *regexp.Regexp) int {
+	var q *gocql.Query
+
+	q = s.Query(
 		`SELECT log FROM logs WHERE source_id = ? and ts_min IN ?`,
 		sourceID,
-		timesToString(ts),
-	).Consistency(gocql.One).Iter()
+		timesToString(t),
+	).Consistency(gocql.One)
 
-	fmt.Println(q)
-
+	iter := q.Iter()
 	var numLogs int
 	var log []byte
-	for q.Scan(&log) {
-		if re.Match(log) {
+	for iter.Scan(&log) {
+		if re == nil || re.Match(log) {
 			numLogs++
 		}
 	}
 
-	if err := q.Close(); err != nil {
+	if err := iter.Close(); err != nil {
 		fmt.Println(err)
 	}
 
@@ -136,8 +144,6 @@ func getTimes(start, end time.Time) []time.Time {
 	for t := start; t.Equal(end) || end.After(t); t = t.Add(time.Minute) {
 		times = append(times, t)
 	}
-
-	fmt.Println(times)
 
 	return times
 }
@@ -162,6 +168,9 @@ func stopSessions() {
 func startSessions() {
 	sessions = make(chan *gocql.Session, connectionPool)
 
+	rp := gocql.SimpleRetryPolicy{
+		NumRetries: 3,
+	}
 	hosts := strings.Split(os.Getenv("HOSTS"), ",")
 	cluster := gocql.NewCluster(hosts...)
 
@@ -171,6 +180,7 @@ func startSessions() {
 	cluster.ConnectTimeout = 30 * time.Second
 	cluster.Compressor = gocql.SnappyCompressor{}
 	cluster.Timeout = 30 * time.Second
+	cluster.RetryPolicy = &rp
 
 	session, err := cluster.CreateSession()
 	if err != nil {
